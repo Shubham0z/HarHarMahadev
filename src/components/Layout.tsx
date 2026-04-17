@@ -1,19 +1,24 @@
-// src/components/Layout.tsx
 import { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import {
   Home, BarChart3, Search, Menu, X, Zap, ChevronRight,
+  AlertTriangle, MapPin, Factory, IndianRupee, FlaskConical,
 } from 'lucide-react';
 
 const NAV = [
-  { href: '/',          icon: Home,     label: 'Home'      },
-  { href: '/dashboard', icon: BarChart3, label: 'Dashboard' },
-  { href: '/analyze',   icon: Search,   label: 'Analyze'   },
+  { href: '/',           icon: Home,           label: 'Home'      },
+  { href: '/dashboard',  icon: BarChart3,       label: 'Dashboard' },
+  { href: '/analyze',    icon: Search,          label: 'Analyze'   },
+  { href: '/routes',     icon: MapPin,          label: 'Routes'    },
+  { href: '/risk',       icon: AlertTriangle,   label: 'Risk'      },
+  { href: '/suppliers',  icon: Factory,         label: 'Suppliers' },
+  { href: '/costs',      icon: IndianRupee,     label: 'Costs'     },
+  { href: '/scenarios',  icon: FlaskConical,    label: 'Scenarios' },
 ];
 
 export default function Layout({ children }: { children: React.ReactNode }) {
-  const [open,     setOpen]     = useState(true);
-  const [mobile,   setMobile]   = useState(false);
+  const [open,   setOpen]   = useState(true);
+  const [mobile, setMobile] = useState(false);
   const location = useLocation();
 
   useEffect(() => {
@@ -71,7 +76,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             width: 32, height: 32, borderRadius: 9,
             border: '1px solid var(--border)', background: 'var(--bg)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            color: 'var(--text-3)', transition: 'all .2s',
+            color: 'var(--text-3)', transition: 'all .2s', cursor: 'pointer',
           }}
             onMouseEnter={e => { const d = e.currentTarget; d.style.background='var(--primary)'; d.style.color='#fff'; d.style.borderColor='var(--primary)'; }}
             onMouseLeave={e => { const d = e.currentTarget; d.style.background='var(--bg)'; d.style.color='var(--text-3)'; d.style.borderColor='var(--border)'; }}
@@ -81,7 +86,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         </div>
 
         {/* Nav */}
-        <nav style={{ flex: 1, padding: '12px 8px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <nav style={{ flex: 1, padding: '12px 8px', display: 'flex', flexDirection: 'column', gap: 4, overflowY: 'auto' }}>
           {NAV.map(({ href, icon: Icon, label }) => {
             const active = location.pathname === href;
             return (
@@ -144,7 +149,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 width: 34, height: 34, borderRadius: 9,
                 border: '1px solid var(--border)', background: 'var(--bg)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                marginRight: 4,
+                marginRight: 4, cursor: 'pointer',
               }}>
                 <Menu size={15} color="var(--text-2)" />
               </button>
