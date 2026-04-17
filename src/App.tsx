@@ -8,6 +8,7 @@ import RiskPage from './pages/RiskPage';
 import SuppliersPage from './pages/SuppliersPage';
 import CostPage from './pages/CostPage';
 import ScenariosPage from './pages/ScenariosPage';
+import ReportsPage from './pages/ReportsPage';
 
 export default function App() {
   return (
@@ -21,8 +22,8 @@ export default function App() {
         <Route path="/suppliers"  element={<Layout><SuppliersPage /></Layout>} />
         <Route path="/costs"      element={<Layout><CostPage /></Layout>}      />
         <Route path="/scenarios"  element={<Layout><ScenariosPage /></Layout>} />
-        {/* Catch all → home */}
-        <Route path="*"           element={<Layout><HomePage /></Layout>}      />
+        <Route path="/reports"    element={<Layout><ReportsPage /></Layout>}   />
+        <Route path="/Cost"           element={<Layout><CostPage /></Layout>}      />
       </Routes>
     </BrowserRouter>
   );
