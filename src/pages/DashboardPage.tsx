@@ -1,627 +1,461 @@
 // src/pages/DashboardPage.tsx
+import { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
+import KPICard from '../components/KPICard';
+import StatusBadge from '../components/StatusBadge';
 import {
-  Truck, AlertTriangle, CheckCircle, IndianRupee, Factory, Bot,
-  Search, Bell, MapPin, TrendingUp, Package, Clock, BarChart2,
-  ArrowRight, Zap, Activity, ShieldCheck, Gauge,
+    Truck, AlertTriangle, CheckCircle, IndianRupee, Factory, Bot,
+    Search, Bell, MapPin, FileText, ArrowRight, TrendingUp,
+    Package, Clock, BarChart2, Zap
 } from 'lucide-react';
+import type { RiskLevel, Decision } from '../lib/constants';
+import { supabase, getAllAnalyses, getAnalysesCount, getActiveAlerts, type SupabaseAnalysis, type LiveAlert } from '../lib/supabase';
 
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   DATA
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
-const kpis = [
-  {
-    icon: Truck,
-    label: 'Active Shipments',
-    sublabel: 'Across 8 cities',
-    value: '142',
-    trend: '+12%',
-    trendUp: true,
-    color: '#F97316',
-    desc: 'vs last month',
-  },
-  {
-    icon: AlertTriangle,
-    label: 'Open Risk Alerts',
-    sublabel: '1 Critical',
-    value: '3',
-    trend: '+3',
-    trendUp: false,
-    color: '#EF4444',
-    desc: 'needs attention',
-  },
-  {
-    icon: CheckCircle,
-    label: 'On-Time Delivery',
-    sublabel: 'Last 30 days',
-    value: '94.2%',
-    trend: '+1.4%',
-    trendUp: true,
-    color: '#10B981',
-    desc: 'target: 92%',
-  },
-  {
-    icon: IndianRupee,
-    label: 'Avg Shipment Cost',
-    sublabel: 'This month',
-    value: '₹2.4L',
-    trend: '-8%',
-    trendUp: true,
-    color: '#F59E0B',
-    desc: 'vs prev month',
-  },
-  {
-    icon: Factory,
-    label: 'Active Suppliers',
-    sublabel: 'Across 6 categories',
-    value: '47',
-    trend: '+3',
-    trendUp: true,
-    color: '#8B5CF6',
-    desc: 'verified partners',
-  },
-  {
-    icon: Bot,
-    label: 'AI Analyses Run',
-    sublabel: 'Total lifetime',
-    value: '284',
-    trend: '+284',
-    trendUp: true,
-    color: '#3B82F6',
-    desc: 'all time',
-  },
-];
+// ─── Parse helpers ────────────────────────────────────────────────────────────
+function parseOriginDest(best_route: string): { origin: string; destination: string } {
+    if (!best_route) return { origin: '', destination: '' };
+    const fromTo = best_route.match(/from\s+([A-Za-z\s]+?)\s+to\s+([A-Za-z\s]+?)(?:\s*[,.]|$)/i);
+    if (fromTo) return { origin: fromTo[1].trim(), destination: fromTo[2].trim() };
+    const arrow = best_route.match(/([A-Za-z\s]+?)\s*[→\-–]\s*([A-Za-z\s]+)/);
+    if (arrow) return { origin: arrow[1].trim(), destination: arrow[2].trim() };
+    return { origin: '', destination: '' };
+}
 
-const alerts = [
-  {
-    type: 'CRITICAL',
-    icon: '🌧️',
-    title: 'Heavy Rain Alert — Mumbai Port',
-    desc: 'Port ops may delay 12–24 hrs. Consider road diversion via NH-48.',
-    source: 'Weather Agent',
-    time: '5 min ago',
-    action: 'View Route Alternative',
-  },
-  {
-    type: 'WARNING',
-    icon: '🚛',
-    title: 'Truck Shortage — Delhi NCR',
-    desc: 'Only 60% fleet available this week due to driver strike.',
-    source: 'Route Agent',
-    time: '22 min ago',
-    action: 'Switch to Rail',
-  },
-  {
-    type: 'INFO',
-    icon: '📦',
-    title: 'Supplier Restocked — Pharma (Pune)',
-    desc: 'MedPharma Pune has restocked. Good time to dispatch bulk orders.',
-    source: 'Supplier Agent',
-    time: '1 hr ago',
-    action: 'Place Order',
-  },
-];
+function getOriginDest(result: SupabaseAnalysis['result']): { origin: string; destination: string } {
+    const r = result as any;
+    const directOrigin = r.origin ?? r.origin_city ?? '';
+    const directDest   = r.destination ?? r.destination_city ?? '';
+    if (directOrigin && directDest) return { origin: directOrigin, destination: directDest };
+    const br = typeof r.best_route === 'string' ? r.best_route : '';
+    return parseOriginDest(br);
+}
 
-const recentAnalyses = [
-  { product: 'Pharma',      origin: 'Mumbai',    destination: 'Delhi',     decision: 'SHIP NOW', risk: 'LOW',    cost: 120000,  hrs: 18, confidence: 94 },
-  { product: 'Electronics', origin: 'Bangalore', destination: 'Chennai',   decision: 'DELAY',    risk: 'MEDIUM', cost: 340000,  hrs: 24, confidence: 78 },
-  { product: 'FMCG',        origin: 'Delhi',     destination: 'Jaipur',    decision: 'SHIP NOW', risk: 'LOW',    cost: 82000,   hrs: 10, confidence: 91 },
-  { product: 'Automotive',  origin: 'Pune',      destination: 'Hyderabad', decision: 'SHIP NOW', risk: 'LOW',    cost: 215000,  hrs: 22, confidence: 88 },
-  { product: 'Chemical',    origin: 'Surat',     destination: 'Mumbai',    decision: 'CANCEL',   risk: 'HIGH',   cost: 490000,  hrs: 36, confidence: 96 },
-];
+function getProduct(result: SupabaseAnalysis['result']): string {
+    const r = result as any;
+    if (r.product && r.product !== '—' && r.product !== '') return String(r.product);
+    const known = ['Pharma','Electronics','FMCG','Automotive','Kirana','Cloth','Furniture','Appliances','Rice','Wheat','Chemicals','Steel','Plastics'];
+    const sup = typeof r.best_supplier === 'string' ? r.best_supplier : (r.best_supplier?.name ?? '');
+    for (const k of known) if (sup.toLowerCase().includes(k.toLowerCase())) return k;
+    const rec = r.final_recommendation ?? '';
+    for (const k of known) if (rec.toLowerCase().includes(k.toLowerCase())) return k;
+    return '';
+}
 
-const cityPerf = [
-  { city: 'Mumbai',    shipments: 34, onTime: 97, risk: 'LOW'    },
-  { city: 'Delhi',     shipments: 28, onTime: 91, risk: 'MEDIUM' },
-  { city: 'Bangalore', shipments: 22, onTime: 95, risk: 'LOW'    },
-  { city: 'Chennai',   shipments: 19, onTime: 78, risk: 'HIGH'   },
-  { city: 'Hyderabad', shipments: 17, onTime: 93, risk: 'LOW'    },
-  { city: 'Kolkata',   shipments: 14, onTime: 88, risk: 'MEDIUM' },
-  { city: 'Gujarat',   shipments: 12, onTime: 96, risk: 'LOW'    },
-  { city: 'Goa',       shipments:  8, onTime: 82, risk: 'MEDIUM' },
+/**
+ * ✅ Dedup by content fingerprint — removes true duplicate analyses
+ * (same best_route + same cost + same decision = same analysis, keep latest)
+ */
+function dedupeByContent(arr: SupabaseAnalysis[]): SupabaseAnalysis[] {
+    const seen = new Set<string>();
+    return arr.filter(a => {
+        const r = a.result as any;
+        const key = [
+            r.best_route ?? '',
+            r.total_cost_inr ?? '',
+            r.decision ?? '',
+            r.overall_risk ?? '',
+        ].join('|');
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+}
+
+// ─── Style helpers ────────────────────────────────────────────────────────────
+const alertVariant: Record<string, 'danger' | 'warning' | 'accent'> = {
+    CRITICAL: 'danger', WARNING: 'warning', INFO: 'accent'
+};
+const decisionVariant: Record<Decision, 'success' | 'warning' | 'danger'> = {
+    'SHIP NOW': 'success', 'DELAY': 'warning', 'CANCEL': 'danger'
+};
+const riskColor = (r: RiskLevel) => r === 'LOW' ? '#10B981' : r === 'MEDIUM' ? '#F59E0B' : '#EF4444';
+const alertBg     = (t: string) => t === 'CRITICAL' ? 'rgba(239,68,68,0.05)'  : t === 'WARNING' ? 'rgba(245,158,11,0.05)'  : 'rgba(59,130,246,0.05)';
+const alertBorder = (t: string) => t === 'CRITICAL' ? 'rgba(239,68,68,0.2)'   : t === 'WARNING' ? 'rgba(245,158,11,0.2)'   : 'rgba(59,130,246,0.2)';
+const alertDot    = (t: string) => t === 'CRITICAL' ? '#EF4444' : t === 'WARNING' ? '#F59E0B' : '#3B82F6';
+
+const card: React.CSSProperties = {
+    background: '#fff', border: '1px solid #E2E8F0',
+    borderRadius: 20, padding: 20, transition: 'box-shadow 0.25s ease',
+};
+
+const cityPerformance = [
+    { city: 'Mumbai',    shipments: 34, onTime: 97, risk: 'LOW'    as RiskLevel },
+    { city: 'Delhi',     shipments: 28, onTime: 91, risk: 'MEDIUM' as RiskLevel },
+    { city: 'Bangalore', shipments: 22, onTime: 95, risk: 'LOW'    as RiskLevel },
+    { city: 'Chennai',   shipments: 19, onTime: 78, risk: 'HIGH'   as RiskLevel },
+    { city: 'Hyderabad', shipments: 17, onTime: 93, risk: 'LOW'    as RiskLevel },
+    { city: 'Kolkata',   shipments: 14, onTime: 88, risk: 'MEDIUM' as RiskLevel },
+    { city: 'Ahmedabad', shipments: 12, onTime: 96, risk: 'LOW'    as RiskLevel },
+    { city: 'Goa',       shipments: 8,  onTime: 82, risk: 'MEDIUM' as RiskLevel },
 ];
 
 const topProducts = [
-  { name: 'Pharma',      shipments: 58, revenue: '₹35.6L', trend: '+18%', color: '#F97316' },
-  { name: 'Electronics', shipments: 42, revenue: '₹75.6L', trend: '+6%',  color: '#3B82F6' },
-  { name: 'FMCG',        shipments: 37, revenue: '₹16.7L', trend: '+22%', color: '#10B981' },
-  { name: 'Automotive',  shipments: 28, revenue: '₹26.6L', trend: '+4%',  color: '#F59E0B' },
-  { name: 'Kirana',      shipments: 19, revenue: '₹5.3L',  trend: '-3%',  color: '#EF4444' },
+    { name: 'Pharma',      shipments: 58, revenue: '₹35.6L', trend: '+18%', color: '#F97316' },
+    { name: 'Electronics', shipments: 42, revenue: '₹75.6L', trend: '+6%',  color: '#3B82F6' },
+    { name: 'FMCG',        shipments: 37, revenue: '₹16.7L', trend: '+22%', color: '#10B981' },
+    { name: 'Automotive',  shipments: 28, revenue: '₹26.6L', trend: '+4%',  color: '#F59E0B' },
+    { name: 'Kirana',      shipments: 19, revenue: '₹5.3L',  trend: '-3%',  color: '#EF4444' },
 ];
 
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   HELPERS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
-const riskColor = (r: string) => r === 'LOW' ? '#10B981' : r === 'MEDIUM' ? '#F59E0B' : '#EF4444';
-const riskBg    = (r: string) => r === 'LOW' ? 'rgba(16,185,129,.08)' : r === 'MEDIUM' ? 'rgba(245,158,11,.08)' : 'rgba(239,68,68,.08)';
+function timeAgo(dateStr: string): string {
+    const diff = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
+    if (diff < 60)    return `${diff}s ago`;
+    if (diff < 3600)  return `${Math.floor(diff / 60)} min ago`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)} hr ago`;
+    return `${Math.floor(diff / 86400)} days ago`;
+}
 
-const decisionCfg = (d: string) => ({
-  'SHIP NOW': { color: '#10B981', bg: 'rgba(16,185,129,.1)',  border: 'rgba(16,185,129,.3)'  },
-  'DELAY':    { color: '#F59E0B', bg: 'rgba(245,158,11,.1)',  border: 'rgba(245,158,11,.3)'  },
-  'CANCEL':   { color: '#EF4444', bg: 'rgba(239,68,68,.1)',   border: 'rgba(239,68,68,.3)'   },
-}[d] ?? { color: '#94A3B8', bg: 'transparent', border: 'transparent' });
-
-const alertBg     = (t: string) => t === 'CRITICAL' ? 'rgba(239,68,68,.04)'   : t === 'WARNING' ? 'rgba(245,158,11,.04)'  : 'rgba(59,130,246,.04)';
-const alertBorder = (t: string) => t === 'CRITICAL' ? 'rgba(239,68,68,.2)'    : t === 'WARNING' ? 'rgba(245,158,11,.2)'   : 'rgba(59,130,246,.2)';
-const alertDot    = (t: string) => t === 'CRITICAL' ? '#EF4444' : t === 'WARNING' ? '#F59E0B' : '#3B82F6';
-const alertAction = (t: string) => t === 'CRITICAL' ? 'rgba(239,68,68,.1)'    : t === 'WARNING' ? 'rgba(245,158,11,.1)'   : 'rgba(59,130,246,.1)';
-const alertActionText = (t: string) => t === 'CRITICAL' ? '#EF4444' : t === 'WARNING' ? '#F59E0B' : '#3B82F6';
-
-const SectionLabel = ({ children }: { children: React.ReactNode }) => (
-  <p style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '1.2px', marginBottom: 14 }}>
-    {children}
-  </p>
-);
-
-const card: React.CSSProperties = {
-  background: '#fff',
-  border: '1px solid var(--border)',
-  borderRadius: 20,
-  padding: 22,
-  transition: 'box-shadow .25s ease',
-};
-
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   COMPONENT
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+// ─── Component ────────────────────────────────────────────────────────────────
 export default function DashboardPage() {
-  return (
-    <div style={{ maxWidth: 1200, margin: '0 auto' }}>
+    const [analyses,      setAnalyses]      = useState<SupabaseAnalysis[]>([]);
+    const [totalCount,    setTotalCount]    = useState<number>(0);
+    const [loading,       setLoading]       = useState(true);
+    const [alerts,        setAlerts]        = useState<LiveAlert[]>([]);
+    const [alertsLoading, setAlertsLoading] = useState(true);
 
-      {/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-          PAGE HEADER
-      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */}
-      <div className="anim-up" style={{
-        display: 'flex', flexWrap: 'wrap',
-        alignItems: 'flex-start', justifyContent: 'space-between',
-        gap: 16, marginBottom: 30,
-      }}>
-        <div>
-          <SectionLabel>Operations Overview</SectionLabel>
-          <h1 style={{ fontSize: 26, fontWeight: 800, color: 'var(--text)', marginBottom: 5 }}>
-            Control Tower Dashboard
-          </h1>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            <p style={{ fontSize: 13, color: 'var(--text-3)' }}>Real-time supply chain overview</p>
-            <span style={{
-              display: 'flex', alignItems: 'center', gap: 6,
-              fontSize: 11, fontWeight: 700, color: '#10B981',
-              background: 'rgba(16,185,129,.08)', border: '1px solid rgba(16,185,129,.2)',
-              padding: '3px 10px', borderRadius: 99,
-            }}>
-              <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#10B981', display: 'inline-block', animation: 'livePulse 1.8s infinite' }} />
-              Live
-            </span>
-            <span style={{ fontSize: 12, color: 'var(--text-3)' }}>Last updated: just now</span>
-          </div>
-        </div>
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-          <Link to="/analyze">
-            <button className="btn-primary" style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-              <Search size={14} /> Run New Analysis
-            </button>
-          </Link>
-        </div>
-      </div>
+    const fetchData = useCallback(async () => {
+        const [all, count] = await Promise.all([getAllAnalyses(), getAnalysesCount()]);
+        // ✅ Dedup by content — remove duplicate analyses before rendering
+        setAnalyses(dedupeByContent(all));
+        setTotalCount(count);
+        setLoading(false);
+    }, []);
 
-      {/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-          KPI CARDS
-      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */}
-      <SectionLabel>Key Performance Indicators</SectionLabel>
-      <div className="stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 14, marginBottom: 30 }}>
-        {kpis.map((k, idx) => (
-          <div key={k.label} className="anim-up" style={{ ...card, padding: '18px 20px', animationDelay: `${idx * 60}ms` }}
-            onMouseEnter={e => { const d = e.currentTarget as HTMLDivElement; d.style.boxShadow = `0 10px 28px ${k.color}14`; d.style.borderColor = k.color + '30'; }}
-            onMouseLeave={e => { const d = e.currentTarget as HTMLDivElement; d.style.boxShadow = 'none'; d.style.borderColor = 'var(--border)'; }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-              <div style={{ width: 38, height: 38, borderRadius: 11, background: `${k.color}12`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <k.icon size={17} color={k.color} />
-              </div>
-              <span style={{
-                fontSize: 11, fontWeight: 700,
-                color: k.trendUp ? '#10B981' : '#EF4444',
-                background: k.trendUp ? 'rgba(16,185,129,.08)' : 'rgba(239,68,68,.08)',
-                padding: '2px 8px', borderRadius: 99,
-              }}>
-                {k.trend}
-              </span>
-            </div>
-            <p style={{ fontSize: 24, fontWeight: 900, color: 'var(--text)', marginBottom: 3, lineHeight: 1 }}>{k.value}</p>
-            <p style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginBottom: 2 }}>{k.label}</p>
-            <p style={{ fontSize: 10, color: 'var(--text-3)' }}>{k.sublabel} · {k.desc}</p>
-          </div>
-        ))}
-      </div>
+    const fetchAlerts = useCallback(async () => {
+        const data = await getActiveAlerts();
+        setAlerts(data);
+        setAlertsLoading(false);
+    }, []);
 
-      {/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-          ALERTS + RECENT ANALYSES
-      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: 20, marginBottom: 26 }}>
+    useEffect(() => {
+        fetchData();
+        fetchAlerts();
 
-        {/* Live Risk Alerts */}
-        <div>
-          <SectionLabel>Risk & Disruption Alerts</SectionLabel>
-          <div className="anim-left" style={card}
-            onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = '0 12px 32px rgba(0,0,0,.07)'; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = 'none'; }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <Bell size={15} color="var(--primary)" />
-                <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>Live Alerts</span>
-              </div>
-              <span style={{
-                fontSize: 11, fontWeight: 700, color: '#EF4444',
-                background: 'rgba(239,68,68,.08)', border: '1px solid rgba(239,68,68,.2)',
-                borderRadius: 99, padding: '3px 10px',
-                display: 'flex', alignItems: 'center', gap: 5,
-              }}>
-                <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#EF4444', display: 'inline-block', animation: 'livePulse 1s infinite' }} />
-                3 Active
-              </span>
+        const interval = setInterval(fetchData, 5000);
+
+        const analysisChannel = supabase
+            ?.channel('dashboard-analyses')
+            .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'analyses' }, () => fetchData())
+            .subscribe();
+
+        const alertChannel = supabase
+            ?.channel('dashboard-alerts')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'live_alerts' }, () => fetchAlerts())
+            .subscribe();
+
+        return () => {
+            clearInterval(interval);
+            analysisChannel?.unsubscribe();
+            alertChannel?.unsubscribe();
+        };
+    }, [fetchData, fetchAlerts]);
+
+    const latest           = analyses[0];
+    const latestOriginDest = latest ? getOriginDest(latest.result) : { origin: '', destination: '' };
+
+    const kpis = [
+        { icon: <Truck size={20} />,        label: 'Active Shipments',  value: '142',                                                                                                                      sub: 'Across 8 cities',         color: 'primary' as const, trend: '+12%'           },
+        { icon: <AlertTriangle size={20} />, label: 'Open Risk Alerts',  value: String(alerts.length),                                                                                                      sub: `${alerts.filter(a => a.risk === 'HIGH').length} Critical`, color: 'danger' as const, trend: alerts.length > 0 ? `+${alerts.length}` : '0' },
+        { icon: <CheckCircle size={20} />,   label: 'On-Time Delivery',  value: '94.2%',                                                                                                                    sub: 'Last 30 days',            color: 'success' as const, trend: '+1.4%'          },
+        { icon: <IndianRupee size={20} />,   label: 'Avg Shipment Cost', value: latest ? `₹${(latest.result.total_cost_inr / 100000).toFixed(1)}L` : '₹2.4L',                                            sub: 'Per shipment this month', color: 'warning' as const, trend: '-8%'            },
+        { icon: <Factory size={20} />,       label: 'Active Suppliers',  value: '47',                                                                                                                       sub: 'Across 6 categories',     color: 'accent'  as const, trend: '+3'             },
+        { icon: <Bot size={20} />,           label: 'AI Analyses Run',   value: loading ? '...' : String(totalCount),                                                                                       sub: 'Total lifetime',          color: 'primary' as const, trend: `+${totalCount}` },
+    ];
+
+    return (
+        <div style={{ width: '100%' }}>
+
+            {/* ══ HEADER ══ */}
+            <div className="animate-fade-in-up" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, marginBottom: 32 }}>
+                <div>
+                    <h1 style={{ fontSize: 24, fontWeight: 800, color: '#0F172A', marginBottom: 4 }}>Control Tower Dashboard</h1>
+                    <p style={{ fontSize: 14, color: '#94A3B8', fontWeight: 400 }}>
+                        Real-time supply chain overview — Last updated just now
+                        {latest && latestOriginDest.origin && (
+                            <span style={{ color: '#F97316', fontWeight: 600 }}>
+                                {' '}· Latest: {latestOriginDest.origin} → {latestOriginDest.destination}
+                            </span>
+                        )}
+                    </p>
+                </div>
+                <Link to="/analyze">
+                    <button className="btn-glow" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '11px 22px', background: 'linear-gradient(135deg, #F97316, #EA580C)', color: '#fff', border: 'none', borderRadius: 12, fontSize: 13, fontWeight: 700, cursor: 'pointer', boxShadow: '0 4px 16px rgba(249,115,22,0.28)' }}>
+                        <Search size={14} /> Run New Analysis
+                    </button>
+                </Link>
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {alerts.map((a, i) => (
-                <div key={i} style={{
-                  padding: '13px 14px', borderRadius: 14,
-                  background: alertBg(a.type), border: `1px solid ${alertBorder(a.type)}`,
-                  transition: 'transform .2s', cursor: 'default',
-                }}
-                  onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.transform = 'translateX(4px)'; }}
-                  onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.transform = 'translateX(0)'; }}
+            {/* ══ KPI CARDS ══ */}
+            <div className="stagger-children" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 16, marginBottom: 28 }}>
+                {kpis.map((k, idx) => (
+                    <div key={k.label} className="animate-fade-in-up" style={{ animationDelay: `${idx * 70}ms` }}>
+                        <KPICard {...k} />
+                    </div>
+                ))}
+            </div>
+
+            {/* ══ ALERTS + ANALYSES ══ */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 20, marginBottom: 24 }}>
+
+                {/* LIVE ALERTS */}
+                <div className="animate-slide-in-left" style={card}
+                    onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = '0 12px 32px rgba(0,0,0,0.07)'; }}
+                    onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = 'none'; }}
                 >
-                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-                    <span style={{ fontSize: 18, flexShrink: 0, marginTop: 1 }}>{a.icon}</span>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 4 }}>
-                        <span style={{
-                          width: 6, height: 6, borderRadius: '50%',
-                          background: alertDot(a.type), flexShrink: 0,
-                          animation: a.type === 'CRITICAL' ? 'livePulse 1s infinite' : 'none',
-                          display: 'inline-block',
-                        }} />
-                        <p style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {a.title}
-                        </p>
-                      </div>
-                      <p style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.55, marginBottom: 8 }}>{a.desc}</p>
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                        <div style={{ display: 'flex', gap: 8, fontSize: 11, color: 'var(--text-3)' }}>
-                          <span>{a.time}</span>
-                          <span>·</span>
-                          <span style={{ fontWeight: 600, color: alertDot(a.type) }}>{a.source}</span>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <Bell size={16} color="#F97316" />
+                            <span style={{ fontSize: 13, fontWeight: 700, color: '#0F172A', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Live Alerts</span>
                         </div>
-                        <span style={{
-                          fontSize: 10, fontWeight: 700,
-                          color: alertActionText(a.type),
-                          background: alertAction(a.type),
-                          padding: '3px 9px', borderRadius: 7,
-                          whiteSpace: 'nowrap',
-                        }}>
-                          {a.action} →
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            {alerts.length > 0 && (
+                                <span style={{ fontSize: 11, color: '#EF4444', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 99, padding: '3px 10px', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 5 }}>
+                                    <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#EF4444', display: 'inline-block', animation: 'blink 1s infinite' }} />
+                                    {alerts.length} Active
+                                </span>
+                            )}
+                            {alerts.length === 0 && !alertsLoading && (
+                                <span style={{ fontSize: 11, color: '#10B981', background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.2)', borderRadius: 99, padding: '3px 10px', fontWeight: 600 }}>All Clear</span>
+                            )}
+                        </div>
+                    </div>
+
+                    {alertsLoading && <div style={{ textAlign: 'center', padding: '30px 0', color: '#94A3B8', fontSize: 13 }}>Loading alerts...</div>}
+
+                    {!alertsLoading && alerts.length === 0 && (
+                        <div style={{ textAlign: 'center', padding: '30px 0' }}>
+                            <div style={{ fontSize: 32, marginBottom: 8 }}>✅</div>
+                            <p style={{ fontSize: 13, color: '#94A3B8' }}>No active alerts</p>
+                            <p style={{ fontSize: 11, color: '#CBD5E1', marginTop: 4 }}>Run AI Analysis to generate alerts</p>
+                        </div>
+                    )}
+
+                    {!alertsLoading && alerts.length > 0 && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                            {alerts.map((a, idx) => (
+                                <div key={a.id} className="animate-slide-in-right"
+                                    style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: '12px 14px', background: alertBg(a.type), borderRadius: 12, border: `1px solid ${alertBorder(a.type)}`, transition: 'all 0.2s ease', animationDelay: `${idx * 55}ms`, cursor: 'default' }}
+                                    onMouseEnter={e => { const d = e.currentTarget as HTMLDivElement; d.style.transform = 'translateX(4px)'; d.style.boxShadow = '0 4px 12px rgba(0,0,0,0.06)'; }}
+                                    onMouseLeave={e => { const d = e.currentTarget as HTMLDivElement; d.style.transform = 'translateX(0)'; d.style.boxShadow = 'none'; }}
+                                >
+                                    <span style={{ fontSize: 20, flexShrink: 0, marginTop: 1 }}>{a.icon}</span>
+                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
+                                            <div style={{ width: 7, height: 7, borderRadius: '50%', background: alertDot(a.type), flexShrink: 0, animation: a.type === 'CRITICAL' ? 'blink 1s infinite' : 'none' }} />
+                                            <p style={{ fontSize: 12, fontWeight: 700, color: '#0F172A', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.title}</p>
+                                        </div>
+                                        <p style={{ fontSize: 11, color: '#64748B', lineHeight: 1.5, marginBottom: 4 }}>{a.description}</p>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                            <span style={{ fontSize: 10, color: '#94A3B8' }}>{timeAgo(a.created_at)}</span>
+                                            <span style={{ fontSize: 10, color: '#94A3B8' }}>·</span>
+                                            <span style={{ fontSize: 10, fontWeight: 600, color: alertDot(a.type) }}>{a.source}</span>
+                                        </div>
+                                    </div>
+                                    <StatusBadge status={a.type} variant={alertVariant[a.type]} />
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+
+                {/* ✅ FIXED Recent Analyses — deduped, shows product + route */}
+                <div className="animate-slide-in-right" style={card}
+                    onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = '0 12px 32px rgba(0,0,0,0.07)'; }}
+                    onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = 'none'; }}
+                >
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <Bot size={16} color="#3B82F6" />
+                            <span style={{ fontSize: 13, fontWeight: 700, color: '#0F172A', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Recent Analyses</span>
+                        </div>
+                        <span style={{ fontSize: 11, color: '#10B981', background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.15)', borderRadius: 99, padding: '3px 12px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 5 }}>
+                            <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#10B981', display: 'inline-block', boxShadow: '0 0 4px #10B981' }} />
+                            Live
                         </span>
-                      </div>
                     </div>
-                  </div>
+
+                    {loading ? (
+                        <div style={{ textAlign: 'center', padding: '40px 0', color: '#94A3B8', fontSize: 13 }}>Loading analyses...</div>
+                    ) : analyses.length === 0 ? (
+                        <div style={{ textAlign: 'center', padding: '40px 0' }}>
+                            <p style={{ fontSize: 13, color: '#94A3B8', marginBottom: 12 }}>No analyses yet</p>
+                            <Link to="/analyze">
+                                <button style={{ padding: '8px 16px', borderRadius: 10, fontSize: 12, fontWeight: 600, background: 'rgba(249,115,22,0.08)', color: '#F97316', border: '1px solid rgba(249,115,22,0.2)', cursor: 'pointer' }}>
+                                    Run First Analysis
+                                </button>
+                            </Link>
+                        </div>
+                    ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column' }}>
+                            {/* Show top 5 unique analyses */}
+                            {analyses.slice(0, 5).map((a, i) => {
+                                const { origin, destination } = getOriginDest(a.result);
+                                const product = getProduct(a.result);
+                                const routeLabel = origin && destination
+                                    ? `${origin} → ${destination}`
+                                    : (typeof (a.result as any).best_route === 'string'
+                                        ? (a.result as any).best_route
+                                        : '—');
+
+                                return (
+                                    <div key={a.id}
+                                        style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 8px', borderBottom: i < Math.min(analyses.length, 5) - 1 ? '1px solid #F1F5F9' : 'none', borderRadius: 8, transition: 'background 0.2s', cursor: 'default' }}
+                                        onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.background = '#F8FAFC'; }}
+                                        onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = 'transparent'; }}
+                                    >
+                                        <div style={{ minWidth: 0, flex: 1 }}>
+                                            <p style={{ fontSize: 13, fontWeight: 600, color: '#0F172A', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                {/* Show product if available, then route */}
+                                                {product ? (
+                                                    <><span style={{ color: '#F97316' }}>{product}</span> · {routeLabel}</>
+                                                ) : (
+                                                    routeLabel
+                                                )}
+                                            </p>
+                                            <p style={{ fontSize: 11, color: '#94A3B8', marginTop: 3 }}>
+                                                {timeAgo(a.created_at)} · ₹{a.result.total_cost_inr?.toLocaleString('en-IN') ?? '—'}
+                                            </p>
+                                        </div>
+                                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4, flexShrink: 0, marginLeft: 8 }}>
+                                            <StatusBadge
+                                                status={a.result.decision as Decision}
+                                                variant={decisionVariant[a.result.decision as Decision] ?? 'accent'}
+                                            />
+                                            <span style={{ fontSize: 11, fontWeight: 700, color: riskColor(a.result.overall_risk as RiskLevel) }}>
+                                                {a.result.overall_risk}
+                                            </span>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
                 </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* Recent AI Analyses */}
-        <div>
-          <SectionLabel>AI Decision History</SectionLabel>
-          <div className="anim-right" style={card}
-            onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = '0 12px 32px rgba(0,0,0,.07)'; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = 'none'; }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <Bot size={15} color="#3B82F6" />
-                <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>Recent Analyses</span>
-              </div>
-              <span style={{
-                fontSize: 11, fontWeight: 700, color: '#10B981',
-                background: 'rgba(16,185,129,.08)', border: '1px solid rgba(16,185,129,.2)',
-                borderRadius: 99, padding: '3px 12px',
-                display: 'flex', alignItems: 'center', gap: 5,
-              }}>
-                <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#10B981', boxShadow: '0 0 6px #10B981', display: 'inline-block' }} />
-                Live Feed
-              </span>
             </div>
 
-            {/* Column labels */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', padding: '6px 10px', borderRadius: 8, background: 'var(--bg)', marginBottom: 4 }}>
-              <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.8px' }}>Shipment</span>
-              <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.8px' }}>Decision</span>
-            </div>
-
-            <div style={{ display: 'flex', flexDirection: 'column' }}>
-              {recentAnalyses.map((a, i) => {
-                const dc = decisionCfg(a.decision);
-                return (
-                  <div key={i} style={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                    padding: '11px 10px',
-                    borderBottom: i < recentAnalyses.length - 1 ? '1px solid #F1F5F9' : 'none',
-                    borderRadius: 10, transition: 'background .15s', cursor: 'default',
-                  }}
-                    onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.background = 'var(--bg)'; }}
-                    onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = 'transparent'; }}
-                  >
-                    <div style={{ flex: 1, minWidth: 0, marginRight: 12 }}>
-                      <p style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginBottom: 3 }}>
-                        {a.product} · {a.origin} → {a.destination}
-                      </p>
-                      <div style={{ display: 'flex', gap: 10 }}>
-                        <span style={{ fontSize: 11, color: 'var(--text-3)' }}>₹{a.cost.toLocaleString('en-IN')}</span>
-                        <span style={{ fontSize: 11, color: 'var(--text-3)' }}>·</span>
-                        <span style={{ fontSize: 11, color: 'var(--text-3)' }}>{a.hrs} hrs</span>
-                        <span style={{ fontSize: 11, color: 'var(--text-3)' }}>·</span>
-                        <span style={{ fontSize: 11, color: riskColor(a.risk), fontWeight: 600 }}>{a.risk}</span>
-                      </div>
-                    </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4, flexShrink: 0 }}>
-                      <span style={{
-                        fontSize: 11, fontWeight: 700, color: dc.color,
-                        background: dc.bg, border: `1px solid ${dc.border}`,
-                        padding: '3px 10px', borderRadius: 99,
-                      }}>
-                        {a.decision}
-                      </span>
-                      <span style={{ fontSize: 10, color: 'var(--text-3)' }}>
-                        {a.confidence}% confidence
-                      </span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
-              <Link to="/analyze">
-                <button style={{
-                  width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-                  padding: '10px 0', borderRadius: 10,
-                  border: '1px solid rgba(249,115,22,.2)',
-                  background: 'rgba(249,115,22,.04)',
-                  fontSize: 13, fontWeight: 700, color: 'var(--primary)',
-                  cursor: 'pointer', transition: 'all .2s',
-                }}>
-                  <Zap size={13} /> Run New Analysis <ArrowRight size={12} />
-                </button>
-              </Link>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-          CITY PERFORMANCE
-      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */}
-      <SectionLabel>City-wise Delivery Performance</SectionLabel>
-      <div className="anim-up" style={{ ...card, marginBottom: 26 }}
-        onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = '0 12px 32px rgba(0,0,0,.07)'; }}
-        onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = 'none'; }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <MapPin size={15} color="var(--primary)" />
-            <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>8 Cities — On-Time Rate</span>
-          </div>
-          <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
-            {[['LOW', '#10B981'], ['MEDIUM', '#F59E0B'], ['HIGH', '#EF4444']].map(([label, color]) => (
-              <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                <span style={{ width: 7, height: 7, borderRadius: '50%', background: color as string, display: 'inline-block' }} />
-                <span style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 500 }}>{label}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 12 }}>
-          {cityPerf.map(c => (
-            <div key={c.city} style={{
-              background: 'var(--bg)', borderRadius: 14, padding: '14px 16px',
-              border: '1px solid var(--border)', transition: 'all .2s ease',
-            }}
-              onMouseEnter={e => { const d = e.currentTarget as HTMLDivElement; d.style.background = '#fff'; d.style.borderColor = riskColor(c.risk) + '30'; d.style.transform = 'translateY(-2px)'; d.style.boxShadow = '0 6px 18px rgba(0,0,0,.05)'; }}
-              onMouseLeave={e => { const d = e.currentTarget as HTMLDivElement; d.style.background = 'var(--bg)'; d.style.borderColor = 'var(--border)'; d.style.transform = 'translateY(0)'; d.style.boxShadow = 'none'; }}
+            {/* ══ CITY PERFORMANCE ══ */}
+            <div className="animate-fade-in-up" style={{ ...card, marginBottom: 24 }}
+                onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = '0 12px 32px rgba(0,0,0,0.07)'; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = 'none'; }}
             >
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <div style={{ width: 8, height: 8, borderRadius: '50%', background: riskColor(c.risk) }} />
-                  <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{c.city}</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 20 }}>
+                    <MapPin size={16} color="#F97316" />
+                    <span style={{ fontSize: 13, fontWeight: 700, color: '#0F172A', textTransform: 'uppercase', letterSpacing: '0.5px' }}>City-wise Performance</span>
                 </div>
-                <span style={{
-                  fontSize: 9, fontWeight: 700, padding: '2px 8px', borderRadius: 6,
-                  background: riskBg(c.risk), color: riskColor(c.risk),
-                }}>{c.risk}</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                <span style={{ fontSize: 11, color: 'var(--text-3)' }}>{c.shipments} shipments</span>
-                <span style={{ fontSize: 13, fontWeight: 800, color: riskColor(c.onTime >= 90 ? 'LOW' : c.onTime >= 80 ? 'MEDIUM' : 'HIGH') }}>
-                  {c.onTime}%
-                </span>
-              </div>
-              <div style={{ height: 5, background: 'var(--border)', borderRadius: 99, overflow: 'hidden' }}>
-                <div style={{
-                  height: '100%', width: `${c.onTime}%`, borderRadius: 99, transition: 'width .8s ease',
-                  background: c.onTime >= 90 ? '#10B981' : c.onTime >= 80 ? '#F59E0B' : '#EF4444',
-                }} />
-              </div>
-              <p style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 7 }}>on-time delivery rate</p>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
+                    {cityPerformance.map((c, idx) => (
+                        <div key={c.city} className="animate-fade-in-up"
+                            style={{ background: '#F8FAFC', borderRadius: 14, padding: '14px 16px', border: '1px solid #E2E8F0', transition: 'all 0.2s ease', animationDelay: `${idx * 50}ms` }}
+                            onMouseEnter={e => { const d = e.currentTarget as HTMLDivElement; d.style.background = '#fff'; d.style.borderColor = 'rgba(249,115,22,0.2)'; d.style.transform = 'translateY(-2px)'; d.style.boxShadow = '0 6px 16px rgba(0,0,0,0.06)'; }}
+                            onMouseLeave={e => { const d = e.currentTarget as HTMLDivElement; d.style.background = '#F8FAFC'; d.style.borderColor = '#E2E8F0'; d.style.transform = 'translateY(0)'; d.style.boxShadow = 'none'; }}
+                        >
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                                <span style={{ fontSize: 13, fontWeight: 700, color: '#0F172A' }}>{c.city}</span>
+                                <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 6, background: `${riskColor(c.risk)}18`, color: riskColor(c.risk) }}>{c.risk}</span>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                                <span style={{ fontSize: 11, color: '#94A3B8' }}>{c.shipments} shipments</span>
+                                <span style={{ fontSize: 12, fontWeight: 700, color: riskColor(c.onTime >= 90 ? 'LOW' : c.onTime >= 80 ? 'MEDIUM' : 'HIGH') }}>{c.onTime}%</span>
+                            </div>
+                            <div style={{ height: 5, background: '#E2E8F0', borderRadius: 99, overflow: 'hidden' }}>
+                                <div style={{ height: '100%', width: `${c.onTime}%`, background: c.onTime >= 90 ? 'linear-gradient(90deg, #10B981, #34D399)' : c.onTime >= 80 ? 'linear-gradient(90deg, #F59E0B, #FCD34D)' : 'linear-gradient(90deg, #EF4444, #F87171)', borderRadius: 99, transition: 'width 0.8s ease' }} />
+                            </div>
+                        </div>
+                    ))}
+                </div>
             </div>
-          ))}
-        </div>
-      </div>
 
-      {/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-          TOP PRODUCTS + MONTHLY SUMMARY
-      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 20, marginBottom: 26 }}>
-
-        {/* Top Products */}
-        <div>
-          <SectionLabel>Top Product Categories</SectionLabel>
-          <div className="anim-left" style={card}
-            onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = '0 12px 32px rgba(0,0,0,.07)'; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = 'none'; }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 18 }}>
-              <Package size={15} color="var(--primary)" />
-              <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>Revenue by Product</span>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-              {topProducts.map(p => (
-                <div key={p.name}
-                  style={{ cursor: 'default', padding: '2px 0', borderRadius: 8, transition: 'background .15s' }}
-                  onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.background = 'var(--bg)'; }}
-                  onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = 'transparent'; }}
+            {/* ══ TOP PRODUCTS + SUMMARY ══ */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 20, marginBottom: 24 }}>
+                <div className="animate-slide-in-left" style={card}
+                    onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = '0 12px 32px rgba(0,0,0,0.07)'; }}
+                    onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = 'none'; }}
                 >
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 7 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-                      <div style={{ width: 10, height: 10, borderRadius: '50%', background: p.color, flexShrink: 0 }} />
-                      <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{p.name}</span>
-                      <span style={{ fontSize: 11, color: 'var(--text-3)' }}>{p.shipments} shipments</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 18 }}>
+                        <Package size={16} color="#F97316" />
+                        <span style={{ fontSize: 13, fontWeight: 700, color: '#0F172A', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Top Product Categories</span>
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                      <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{p.revenue}</span>
-                      <span style={{
-                        fontSize: 11, fontWeight: 700,
-                        color: p.trend.startsWith('+') ? '#10B981' : '#EF4444',
-                        background: p.trend.startsWith('+') ? 'rgba(16,185,129,.08)' : 'rgba(239,68,68,.08)',
-                        padding: '2px 7px', borderRadius: 7,
-                      }}>{p.trend}</span>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                        {topProducts.map((p, i) => (
+                            <div key={p.name} className="animate-fade-in-up" style={{ animationDelay: `${i * 60}ms` }}>
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                        <div style={{ width: 10, height: 10, borderRadius: '50%', background: p.color, flexShrink: 0 }} />
+                                        <span style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>{p.name}</span>
+                                    </div>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                                        <span style={{ fontSize: 12, color: '#94A3B8' }}>{p.shipments} shipments</span>
+                                        <span style={{ fontSize: 12, fontWeight: 700, color: '#0F172A' }}>{p.revenue}</span>
+                                        <span style={{ fontSize: 11, fontWeight: 700, color: p.trend.startsWith('+') ? '#10B981' : '#EF4444' }}>{p.trend}</span>
+                                    </div>
+                                </div>
+                                <div style={{ height: 6, background: '#F1F5F9', borderRadius: 99, overflow: 'hidden' }}>
+                                    <div style={{ height: '100%', width: `${(p.shipments / 58) * 100}%`, background: p.color, borderRadius: 99, opacity: 0.8, transition: 'width 0.8s ease' }} />
+                                </div>
+                            </div>
+                        ))}
                     </div>
-                  </div>
-                  <div style={{ height: 5, background: '#F1F5F9', borderRadius: 99, overflow: 'hidden' }}>
-                    <div style={{ height: '100%', width: `${(p.shipments / 58) * 100}%`, background: p.color, borderRadius: 99, opacity: .85, transition: 'width .8s ease' }} />
-                  </div>
                 </div>
-              ))}
-            </div>
-          </div>
-        </div>
 
-        {/* Monthly Summary */}
-        <div>
-          <SectionLabel>Monthly Performance Summary — April 2026</SectionLabel>
-          <div className="anim-right" style={card}
-            onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = '0 12px 32px rgba(0,0,0,.07)'; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = 'none'; }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 18 }}>
-              <BarChart2 size={15} color="#3B82F6" />
-              <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>This Month at a Glance</span>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 11 }}>
-              {[
-                { icon: TrendingUp,    label: 'Total Revenue',      value: '₹1.6Cr', sub: 'Apr 2026',         color: '#F97316' },
-                { icon: Truck,         label: 'Shipments Completed', value: '1,247',  sub: 'This month',        color: '#3B82F6' },
-                { icon: Clock,         label: 'Avg Lead Time',       value: '18 hrs', sub: 'Per shipment',      color: '#10B981' },
-                { icon: AlertTriangle, label: 'Disruptions Prevented',value: '23',    sub: 'Saved by AI alerts', color: '#F59E0B' },
-                { icon: Factory,       label: 'Supplier Network Score',value: '87/100',sub: 'Network average',   color: '#8B5CF6' },
-                { icon: Gauge,         label: 'AI Decision Accuracy', value: '96.4%', sub: 'vs actual outcomes', color: '#10B981' },
-              ].map(item => (
-                <div key={item.label} style={{
-                  background: 'var(--bg)', borderRadius: 13, padding: '13px 14px',
-                  border: '1px solid var(--border)', transition: 'all .2s ease',
-                }}
-                  onMouseEnter={e => { const d = e.currentTarget as HTMLDivElement; d.style.background = '#fff'; d.style.borderColor = item.color + '25'; d.style.transform = 'translateY(-2px)'; d.style.boxShadow = '0 6px 14px rgba(0,0,0,.05)'; }}
-                  onMouseLeave={e => { const d = e.currentTarget as HTMLDivElement; d.style.background = 'var(--bg)'; d.style.borderColor = 'var(--border)'; d.style.transform = 'translateY(0)'; d.style.boxShadow = 'none'; }}
+                <div className="animate-slide-in-right" style={card}
+                    onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = '0 12px 32px rgba(0,0,0,0.07)'; }}
+                    onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = 'none'; }}
                 >
-                  <div style={{ width: 30, height: 30, borderRadius: 9, background: `${item.color}12`, display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 9 }}>
-                    <item.icon size={14} color={item.color} />
-                  </div>
-                  <p style={{ fontSize: 18, fontWeight: 800, color: 'var(--text)', marginBottom: 2, lineHeight: 1 }}>{item.value}</p>
-                  <p style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 2 }}>{item.label}</p>
-                  <p style={{ fontSize: 10, color: 'var(--text-3)' }}>{item.sub}</p>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 18 }}>
+                        <BarChart2 size={16} color="#3B82F6" />
+                        <span style={{ fontSize: 13, fontWeight: 700, color: '#0F172A', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Monthly Summary</span>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                        {[
+                            { icon: <TrendingUp size={18} />,    label: 'Total Revenue',  value: '₹1.6Cr',                                                                  sub: 'Feb 2026',           color: '#F97316' },
+                            { icon: <Truck size={18} />,         label: 'Shipments Done', value: '1,247',                                                                    sub: 'This month',         color: '#3B82F6' },
+                            { icon: <Clock size={18} />,         label: 'Avg Lead Time',  value: latest ? `${latest.result.estimated_delivery_hours} hrs` : '18.4 hrs',      sub: 'Per shipment',       color: '#10B981' },
+                            { icon: <AlertTriangle size={18} />, label: 'Disruptions',    value: '23',                                                                        sub: 'Prevented by AI',    color: '#F59E0B' },
+                            { icon: <Factory size={18} />,       label: 'Supplier Score', value: '87/100',                                                                    sub: 'Network avg',        color: '#8B5CF6' },
+                            { icon: <CheckCircle size={18} />,   label: 'AI Accuracy',    value: '96.4%',                                                                     sub: 'Decision precision', color: '#10B981' },
+                        ].map((item, idx) => (
+                            <div key={item.label} className="animate-fade-in-up"
+                                style={{ background: '#F8FAFC', borderRadius: 14, padding: '14px', border: '1px solid #E2E8F0', transition: 'all 0.2s ease', animationDelay: `${idx * 55}ms` }}
+                                onMouseEnter={e => { const d = e.currentTarget as HTMLDivElement; d.style.background = '#fff'; d.style.borderColor = 'rgba(249,115,22,0.15)'; d.style.transform = 'translateY(-2px)'; d.style.boxShadow = '0 6px 16px rgba(0,0,0,0.05)'; }}
+                                onMouseLeave={e => { const d = e.currentTarget as HTMLDivElement; d.style.background = '#F8FAFC'; d.style.borderColor = '#E2E8F0'; d.style.transform = 'translateY(0)'; d.style.boxShadow = 'none'; }}
+                            >
+                                <div style={{ color: item.color, marginBottom: 8 }}>{item.icon}</div>
+                                <p style={{ fontSize: 16, fontWeight: 800, color: '#0F172A', marginBottom: 2 }}>{item.value}</p>
+                                <p style={{ fontSize: 11, fontWeight: 600, color: '#475569', marginBottom: 1 }}>{item.label}</p>
+                                <p style={{ fontSize: 10, color: '#94A3B8' }}>{item.sub}</p>
+                            </div>
+                        ))}
+                    </div>
                 </div>
-              ))}
             </div>
-          </div>
+
+            {/* ══ QUICK NAV ══ */}
+            <div className="stagger-children" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12, marginBottom: 8 }}>
+                {[
+                    { href: '/routes',    icon: <MapPin size={18} />,        label: 'View Routes',  sub: '6 active lanes'                                                                            },
+                    { href: '/suppliers', icon: <Factory size={18} />,       label: 'Suppliers',    sub: '47 suppliers'                                                                              },
+                    { href: '/risk',      icon: <AlertTriangle size={18} />, label: 'Risk Center',  sub: `${alerts.length} open alerts`                                                              },
+                    { href: '/cost',      icon: <IndianRupee size={18} />,   label: 'Cost Impact',  sub: latest ? `₹${latest.result.total_cost_inr?.toLocaleString('en-IN')}` : '₹1.6Cr this month' },
+                    { href: '/reports',   icon: <FileText size={18} />,      label: 'Reports',      sub: loading ? '...' : `${totalCount} analyses`                                                  },
+                ].map((n, idx) => (
+                    <Link key={n.href} to={n.href} style={{ textDecoration: 'none' }}>
+                        <div className="animate-fade-in-up"
+                            style={{ background: '#fff', borderRadius: 16, padding: '14px 16px', border: '1px solid #E2E8F0', display: 'flex', alignItems: 'center', gap: 12, transition: 'all 0.2s ease', cursor: 'pointer', animationDelay: `${idx * 60}ms` }}
+                            onMouseEnter={e => { const d = e.currentTarget as HTMLDivElement; d.style.borderColor = 'rgba(249,115,22,0.3)'; d.style.background = 'rgba(249,115,22,0.02)'; d.style.transform = 'translateY(-3px)'; d.style.boxShadow = '0 8px 20px rgba(249,115,22,0.1)'; }}
+                            onMouseLeave={e => { const d = e.currentTarget as HTMLDivElement; d.style.borderColor = '#E2E8F0'; d.style.background = '#fff'; d.style.transform = 'translateY(0)'; d.style.boxShadow = 'none'; }}
+                        >
+                            <div style={{ width: 36, height: 36, borderRadius: 10, background: '#F8FAFC', color: '#94A3B8', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{n.icon}</div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                                <p style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>{n.label}</p>
+                                <p style={{ fontSize: 11, color: '#94A3B8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{n.sub}</p>
+                            </div>
+                            <ArrowRight size={14} style={{ color: '#CBD5E1', flexShrink: 0 }} />
+                        </div>
+                    </Link>
+                ))}
+            </div>
+
+            <style>{`@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }`}</style>
         </div>
-      </div>
-
-      {/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-          QUICK LINKS STRIP
-      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */}
-      <SectionLabel>Quick Actions</SectionLabel>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12, marginBottom: 22 }}>
-        {[
-          { to: '/analyze',   icon: Zap,         color: '#F97316', label: 'Run AI Analysis',       desc: 'Get SHIP NOW / DELAY in 60s' },
-          { to: '/cost',      icon: IndianRupee,  color: '#3B82F6', label: 'View Cost Intelligence', desc: 'Full freight + tax breakdown'  },
-          { to: '/suppliers', icon: Factory,      color: '#10B981', label: 'Browse Suppliers',       desc: '47 verified partners, scored'  },
-          { to: '/alerts',    icon: Bell,         color: '#EF4444', label: 'Check Risk Alerts',      desc: '3 active, 1 critical'          },
-        ].map(item => (
-          <Link key={item.to} to={item.to}>
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: 14, padding: '16px 18px',
-              background: '#fff', border: '1px solid var(--border)', borderRadius: 16,
-              transition: 'all .2s', cursor: 'pointer',
-            }}
-              onMouseEnter={e => { const d = e.currentTarget as HTMLDivElement; d.style.borderColor = item.color + '35'; d.style.boxShadow = `0 6px 18px ${item.color}12`; d.style.transform = 'translateY(-2px)'; }}
-              onMouseLeave={e => { const d = e.currentTarget as HTMLDivElement; d.style.borderColor = 'var(--border)'; d.style.boxShadow = 'none'; d.style.transform = 'translateY(0)'; }}
-            >
-              <div style={{ width: 40, height: 40, borderRadius: 12, background: `${item.color}10`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                <item.icon size={18} color={item.color} />
-              </div>
-              <div style={{ flex: 1 }}>
-                <p style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginBottom: 2 }}>{item.label}</p>
-                <p style={{ fontSize: 11, color: 'var(--text-3)' }}>{item.desc}</p>
-              </div>
-              <ArrowRight size={14} color="var(--text-3)" />
-            </div>
-          </Link>
-        ))}
-      </div>
-
-      {/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-          HERO CTA FOOTER
-      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */}
-      <Link to="/analyze">
-        <div style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          padding: '20px 26px', borderRadius: 18,
-          background: 'linear-gradient(135deg, rgba(249,115,22,.06), rgba(59,130,246,.05))',
-          border: '1px solid rgba(249,115,22,.18)',
-          transition: 'all .2s', cursor: 'pointer',
-        }}
-          onMouseEnter={e => { const d = e.currentTarget as HTMLDivElement; d.style.borderColor = 'rgba(249,115,22,.35)'; d.style.boxShadow = '0 8px 28px rgba(249,115,22,.1)'; }}
-          onMouseLeave={e => { const d = e.currentTarget as HTMLDivElement; d.style.borderColor = 'rgba(249,115,22,.18)'; d.style.boxShadow = 'none'; }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-            <div style={{
-              width: 44, height: 44, borderRadius: 14,
-              background: 'linear-gradient(135deg, var(--primary), var(--primary-dark))',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              boxShadow: '0 4px 14px rgba(249,115,22,.3)', flexShrink: 0,
-            }}>
-              <Zap size={19} color="#fff" fill="#fff" />
-            </div>
-            <div>
-              <p style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', marginBottom: 2 }}>
-                Start a New AI Analysis
-              </p>
-              <p style={{ fontSize: 12, color: 'var(--text-3)' }}>
-                6 agents · Full cost + route + supplier · SHIP NOW / DELAY / CANCEL in &lt;60s
-              </p>
-            </div>
-          </div>
-          <ArrowRight size={18} color="var(--primary)" />
-        </div>
-      </Link>
-
-      <style>{`
-        @keyframes livePulse {
-          0%, 100% { opacity: 1; transform: scale(1) }
-          50% { opacity: .35; transform: scale(1.5) }
-        }
-      `}</style>
-    </div>
-  );
+    );
 }
