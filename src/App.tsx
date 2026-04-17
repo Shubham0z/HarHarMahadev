@@ -7,7 +7,7 @@ import RoutesPage from './pages/RoutePage';
 import RiskPage from './pages/RiskPage';
 import SuppliersPage from './pages/SuppliersPage';
 import CostPage from './pages/CostPage';
-import ScenariosPage from './pages/ScenariosPage';
+import ScenariosPage from './pages/ScenarioPage';
 import ReportsPage from './pages/ReportsPage';
 
 export default function App() {
